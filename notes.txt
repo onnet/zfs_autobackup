@@ -1,0 +1,1 @@
+zfs get -t volume,filesystem -o name,property,value,source -s local,inherited -H autobackup:raduga-smart2
