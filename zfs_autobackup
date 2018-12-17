@@ -31,14 +31,14 @@ def debug(txt):
 
 
 """run a command. specifiy ssh user@host to run remotely"""
-def run(cmd, input=None, ssh_to="local", tab_split=False, valid_exitcodes=[ 0 ], test=False):
+def run(cmd, input=None, ssh_to="local", ssh_to_port="22", tab_split=False, valid_exitcodes=[ 0 ], test=False):
 
     encoded_cmd=[]
 
 
     #use ssh?
     if ssh_to != "local":
-        encoded_cmd.extend(["ssh", ssh_to])
+        encoded_cmd.extend(["ssh", "-p", ssh_to_port, ssh_to])
         if args.ssh_cipher:
             encoded_cmd.extend(["-c", args.ssh_cipher])
         if args.compress:
@@ -91,9 +91,9 @@ def run(cmd, input=None, ssh_to="local", tab_split=False, valid_exitcodes=[ 0 ],
 
 
 """determine filesystems that should be backupped by looking at the special autobackup-property"""
-def zfs_get_selected_filesystems(ssh_to, backup_name):
+def zfs_get_selected_filesystems(ssh_to, ssh_to_port, backup_name):
     #get all source filesystems that have the backup property
-    source_filesystems=run(ssh_to=ssh_to, tab_split=True, cmd=[
+    source_filesystems=run(ssh_to=ssh_to, ssh_to_port=ssh_to_port, tab_split=True, cmd=[
         "zfs", "get", "-t",  "volume,filesystem", "-o", "name,value,source", "-s", "local,inherited", "-H", "autobackup:"+backup_name
     ])
 
@@ -124,13 +124,13 @@ def zfs_get_selected_filesystems(ssh_to, backup_name):
 
 
 """determine filesystems that can be resumed via receive_resume_token"""
-def zfs_get_resumable_filesystems(ssh_to, filesystems):
+def zfs_get_resumable_filesystems(ssh_to, ssh_to_port, filesystems):
 
     cmd=[ "zfs", "get", "-t",  "volume,filesystem", "-o", "name,value", "-H", "receive_resume_token" ]
     cmd.extend(filesystems)
 
     #TODO: get rid of ugly errors for non-existing target filesystems
-    resumable_filesystems=run(ssh_to=ssh_to, tab_split=True, cmd=cmd, valid_exitcodes= [ 0,1 ] )
+    resumable_filesystems=run(ssh_to=ssh_to, ssh_to_port=ssh_to_port, tab_split=True, cmd=cmd, valid_exitcodes= [ 0,1 ] )
 
     ret={}
 
@@ -142,15 +142,15 @@ def zfs_get_resumable_filesystems(ssh_to, filesystems):
 
 
 """deferred destroy list of snapshots (in @format). """
-def zfs_destroy_snapshots(ssh_to, snapshots):
+def zfs_destroy_snapshots(ssh_to, ssh_to_port, snapshots):
 
     #zfs can only destroy one filesystem at once so we use xargs and stdin
-    run(ssh_to=ssh_to, test=args.test, input="\0".join(snapshots), cmd=
+    run(ssh_to=ssh_to, ssh_to_port=ssh_to_port, test=args.test, input="\0".join(snapshots), cmd=
         [ "xargs", "-0", "-n", "1", "zfs", "destroy", "-d" ]
     )
 
 """destroy list of filesystems """
-def zfs_destroy(ssh_to, filesystems, recursive=False):
+def zfs_destroy(ssh_to, ssh_to_port, filesystems, recursive=False):
 
     cmd=[ "xargs", "-0", "-n", "1", "zfs", "destroy" ]
 
@@ -158,7 +158,7 @@ def zfs_destroy(ssh_to, filesystems, recursive=False):
         cmd.append("-r")
 
     #zfs can only destroy one filesystem at once so we use xargs and stdin
-    run(ssh_to=ssh_to, test=args.test, input="\0".join(filesystems), cmd=cmd)
+    run(ssh_to=ssh_to, ssh_to_port=ssh_to_port, test=args.test, input="\0".join(filesystems), cmd=cmd)
 
 #simulate snapshots for --test option
 test_snapshots={}
@@ -166,7 +166,7 @@ test_snapshots={}
 
 
 """create snapshot on multiple filesystems at once (atomicly per pool)"""
-def zfs_create_snapshot(ssh_to, filesystems, snapshot):
+def zfs_create_snapshot(ssh_to, ssh_to_port, filesystems, snapshot):
 
 
     #collect per pool, zfs can only take atomic snapshots per pool
@@ -190,14 +190,14 @@ def zfs_create_snapshot(ssh_to, filesystems, snapshot):
                     test_snapshots[ssh_to][filesystem]=[]
                 test_snapshots[ssh_to][filesystem].append(snapshot)
 
-        run(ssh_to=ssh_to, tab_split=False, cmd=cmd, test=args.test)
+        run(ssh_to=ssh_to, ssh_to_port=ssh_to_port, tab_split=False, cmd=cmd, test=args.test)
 
 
 """get names of all snapshots for specified filesystems belonging to backup_name
 
 return[filesystem_name]=[ "snashot1", "snapshot2", ... ]
 """
-def zfs_get_snapshots(ssh_to, filesystems, backup_name):
+def zfs_get_snapshots(ssh_to, ssh_to_port, filesystems, backup_name):
 
     ret={}
 
@@ -208,7 +208,7 @@ def zfs_get_snapshots(ssh_to, filesystems, backup_name):
         ]
         cmd.extend(filesystems)
 
-        snapshots=run(ssh_to=ssh_to, tab_split=False, cmd=cmd, valid_exitcodes=[ 0,1 ])
+        snapshots=run(ssh_to=ssh_to, ssh_to_port=ssh_to_port, tab_split=False, cmd=cmd, valid_exitcodes=[ 0,1 ])
 
 
         for snapshot in snapshots:
@@ -253,7 +253,7 @@ TODO: can we string together all the zfs sends and recvs, so that we only need t
 
 
 """
-def zfs_transfer(ssh_source, source_filesystem, first_snapshot, second_snapshot,
+def zfs_transfer(ssh_source, ssh_source_port, source_filesystem, first_snapshot, second_snapshot,
                  ssh_target, target_filesystem, resume_token=None, buffer_size=None):
 
     #### build source command
@@ -261,6 +261,8 @@ def zfs_transfer(ssh_source, source_filesystem, first_snapshot, second_snapshot,
 
     if ssh_source != "local":
         source_cmd.extend([ "ssh", ssh_source ])
+        if args.ssh_source_port:
+            source_cmd.extend(["-p", args.ssh_source_port])
         if args.ssh_cipher:
             source_cmd.extend(["-c", args.ssh_cipher])
         if args.compress:
@@ -425,8 +427,8 @@ def zfs_autobackup():
     ### getting and determinging source/target filesystems
 
     # get selected filesystem on backup source
-    verbose("Getting selected source filesystems for backup {0} on {1}".format(args.backup_name,args.ssh_source))
-    source_filesystems=zfs_get_selected_filesystems(args.ssh_source, args.backup_name)
+    verbose("Getting selected source filesystems for backup {0} on {1}:{2}".format(args.backup_name,args.ssh_source,args.ssh_source_port))
+    source_filesystems=zfs_get_selected_filesystems(args.ssh_source, args.ssh_source_port, args.backup_name)
 
     #nothing todo
     if not source_filesystems:
@@ -448,7 +450,7 @@ def zfs_autobackup():
     if not args.no_snapshot:
         new_snapshot_name=args.backup_name+"-"+time.strftime("%Y%m%d%H%M%S")
         verbose("Creating source snapshot {0} on {1} ".format(new_snapshot_name, args.ssh_source))
-        zfs_create_snapshot(args.ssh_source, source_filesystems, new_snapshot_name)
+        zfs_create_snapshot(args.ssh_source, args.ssh_source_port, source_filesystems, new_snapshot_name)
 
 
     ### get resumable transfers
@@ -462,13 +464,13 @@ def zfs_autobackup():
     ### get all snapshots of all selected filesystems on both source and target
 
     verbose("Getting source snapshot-list from {0}".format(args.ssh_source))
-    source_snapshots=zfs_get_snapshots(args.ssh_source, source_filesystems, args.backup_name)
+    source_snapshots=zfs_get_snapshots(args.ssh_source, args.ssh_source_port, source_filesystems, args.backup_name)
     debug("Source snapshots: " + str(pprint.pformat(source_snapshots)))
 
     target_snapshots={}
     try:
         verbose("Getting target snapshot-list from {0}".format(args.ssh_target))
-        target_snapshots=zfs_get_snapshots(args.ssh_target, target_filesystems, args.backup_name)
+        target_snapshots=zfs_get_snapshots(args.ssh_target, args.ssh_source_port, target_filesystems, args.backup_name)
     except subprocess.CalledProcessError:
         verbose("(ignoring errors, probably initial backup for this filesystem)")
         pass
@@ -544,10 +546,10 @@ def zfs_autobackup():
                         resume_token=None
 
                     zfs_transfer(
-                        ssh_source=args.ssh_source, source_filesystem=source_filesystem,
-                        first_snapshot=latest_target_snapshot, second_snapshot=send_snapshot,
-                        ssh_target=args.ssh_target, target_filesystem=target_filesystem,
-                        resume_token=resume_token
+                        ssh_source=args.ssh_source, ssh_source_port=args.ssh_source_port,
+						source_filesystem=source_filesystem, first_snapshot=latest_target_snapshot,
+						second_snapshot=send_snapshot, ssh_target=args.ssh_target,
+						target_filesystem=target_filesystem, resume_token=resume_token
                     )
 
 
@@ -583,7 +585,7 @@ def zfs_autobackup():
     stale_target_filesystems=get_stale_backupped_filesystems(ssh_to=args.ssh_target, backup_name=args.backup_name, target_fs=args.target_fs, target_filesystems=target_filesystems)
     debug("Stale target filesystems: {0}".format("\n".join(stale_target_filesystems)))
 
-    stale_target_snapshots=zfs_get_snapshots(args.ssh_target, stale_target_filesystems, args.backup_name)
+    stale_target_snapshots=zfs_get_snapshots(args.ssh_target, args.ssh_source_port, stale_target_filesystems, args.backup_name)
     debug("Stale target snapshots: " + str(pprint.pformat(stale_target_snapshots)))
     target_obsolete_snapshots.update(stale_target_snapshots)
 
@@ -624,6 +626,7 @@ def zfs_autobackup():
 import argparse
 parser = argparse.ArgumentParser(description='ZFS autobackup v2.1')
 parser.add_argument('--ssh-source', default="local", help='Source host to get backup from. (user@hostname) Default %(default)s.')
+parser.add_argument('--ssh-source-port', default="22", help='Source host ssh port to get backup from. (22) Default %(default)s.')
 parser.add_argument('--ssh-target', default="local", help='Target host to push backup to. (user@hostname) Default  %(default)s.')
 parser.add_argument('--ssh-cipher', default=None, help='SSH cipher to use (default  %(default)s)')
 parser.add_argument('--keep-source', type=int, default=30, help='Number of days to keep old snapshots on source. Default %(default)s.')
